@@ -1,0 +1,14 @@
+# Entorno virtual de Python
+venv/
+.env/
+
+# Node / React Native
+node_modules/
+
+# Cachés de Python
+__pycache__/
+*.pyc
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
