@@ -1,203 +1,227 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, Image, Button, ActivityIndicator, ScrollView, Alert, Platform } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Image,
+  ActivityIndicator,
+  StyleSheet,
+  Button,
+  Alert,
+} from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImageManipulator from "expo-image-manipulator";
 
-// !!! ⚠️ CONFIGURACIÓN DE IP ⚠️ !!!
-// ASEGÚRATE DE QUE ESTA IP COINCIDA CON LA IP LOCAL DE TU PC DONDE CORRE FASTAPI
-const API_URL = 'http://192.168.1.193:8000/infer'; 
+export default function App() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [cameraReady, setCameraReady] = useState(false);
+  const [facing, setFacing] = useState("back");
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [processedFrame, setProcessedFrame] = useState(null);
+  const [alerta, setAlerta] = useState(false);
+  const [distancias, setDistancias] = useState([]);
+  const cameraRef = useRef(null);
 
-// Interfaz unificada para manejar Bounding Boxes de Muros y Personas
-interface BoundingBox {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label: 'wall' | 'person'; // Etiqueta para distinguir el tipo
-  area?: number; // Propiedad opcional (solo para Muros)
-  confidence?: number; // Propiedad opcional (solo para Personas)
-}
+  // ⚙️ Tu IP local (ajústala según tu red)
+  const SERVER_URL = "http://192.168.1.195:8000/stream_infer";
 
-const App: React.FC = () => {
-  const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
-  const [resultImageB64, setResultImageB64] = useState<string | null>(null);
-  // Listas separadas para mostrar los resultados de forma clara
-  const [personBoxes, setPersonBoxes] = useState<BoundingBox[]>([]);
-  const [wallBoxes, setWallBoxes] = useState<BoundingBox[]>([]);
-  
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-
-  /** Pide permiso y selecciona la imagen de la galería */
-  const pickImage = async () => {
-    setError(null);
-    setResultImageB64(null);
-    setPersonBoxes([]);
-    setWallBoxes([]);
-    
-    // Solicitar permisos en plataformas que lo requieran
-    if (Platform.OS !== 'web') {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permiso Requerido', 'Necesitamos permiso para acceder a la galería para que esto funcione.');
-        return;
-      }
+  // 🔸 Pedir permisos al iniciar
+  useEffect(() => {
+    if (!permission) {
+      requestPermission();
     }
+  }, []);
 
-    // Lanzar el selector de imágenes
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [4, 3],
-      quality: 1,
-    });
+  const toggleFacing = () =>
+    setFacing((prev) => (prev === "back" ? "front" : "back"));
 
-    if (!result.canceled) {
-      const uri = result.assets[0].uri;
-      setSelectedImageUri(uri);
-      uploadImage(uri);
-    }
-  };
-
-  /** Envía la imagen al servidor FastAPI */
-  const uploadImage = async (uri: string) => {
-    setLoading(true);
+  // 📤 Enviar un frame al servidor
+  const sendFrame = async () => {
+    if (!cameraRef.current || !cameraReady) return;
 
     try {
-      // Convertir URI local a Blob y crear FormData
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      
-      const formData = new FormData();
-      const filename = uri.split('/').pop() || 'photo.jpg';
-      const fileType = filename.split('.').pop() === 'png' ? 'image/png' : 'image/jpeg';
-
-      formData.append('file', {
-        uri: uri,
-        name: filename,
-        type: fileType,
-      } as any);
-
-      // Enviar la solicitud POST al servidor FastAPI
-      const apiResponse = await fetch(API_URL, {
-        method: 'POST',
-        body: formData,
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.1,
+        skipProcessing: true,
       });
 
-      if (!apiResponse.ok) {
-        throw new Error(`HTTP error! Estado: ${apiResponse.status}`);
+      const resized = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 240 } }],
+        { compress: 0.3, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      const response = await fetch(SERVER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frame_b64: resized.base64 }),
+      });
+
+      const data = await response.json();
+      if (data.ok && data.overlay_jpg_b64) {
+        setProcessedFrame(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
+        setAlerta(data.alerta);
+        setDistancias(data.boxes.map((b) => b.distance_m));
       }
-
-      const data = await apiResponse.json();
-
-      if (data.ok) {
-        setResultImageB64(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
-        
-        // Separar las cajas recibidas por etiqueta
-        const allBoxes: BoundingBox[] = data.boxes;
-        setWallBoxes(allBoxes.filter(box => box.label === 'wall'));
-        setPersonBoxes(allBoxes.filter(box => box.label === 'person'));
-
-      } else {
-        setError("Error en la inferencia del servidor.");
-      }
-
-    } catch (e: any) {
-      console.error("Upload error:", e);
-      setError(`Fallo al conectar: ${e.message}. Asegúrate de que el servidor esté corriendo en ${API_URL.split('/infer')[0]}.`);
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      console.error("Error al enviar frame:", err.message);
     }
   };
 
+  // 🔁 Streaming automático
+  useEffect(() => {
+    let interval = null;
+    if (cameraReady) {
+      setIsStreaming(true);
+      interval = setInterval(() => sendFrame(), 600); // intervalo de envío rápido
+    }
+    return () => clearInterval(interval);
+  }, [cameraReady]);
+
+  // ⚠️ Mostrar alerta visual cuando alguien esté cerca
+  useEffect(() => {
+    if (alerta) {
+      console.log("⚠ Persona muy cerca!");
+    }
+  }, [alerta]);
+
+  // Manejo de permisos
+  if (!permission) {
+    return (
+      <View style={styles.center}>
+        <Text>Verificando permisos...</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.center}>
+        <Text>Se requiere permiso para usar la cámara.</Text>
+        <Button title="Permitir cámara" onPress={requestPermission} />
+      </View>
+    );
+  }
+
+  // 🖥️ Interfaz principal
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.title}>Detector de Muros 🧱 y Personas 🧍</Text>
-        <Text style={styles.subtitle}>
-            IP de Conexión: <Text style={styles.ipText}>{API_URL.split('/infer')[0]}</Text>
-        </Text>
-        
-        <View style={styles.buttonContainer}>
-            <Button 
-                title={selectedImageUri ? "Seleccionar otra imagen" : "Seleccionar Imagen"} 
-                onPress={pickImage} 
-                color="#2563eb"
-                disabled={loading}
-            />
-        </View>
+    <View style={styles.container}>
+      <View style={styles.cameraContainer}>
+        <CameraView
+          ref={cameraRef}
+          facing={facing}
+          style={styles.camera}
+          onCameraReady={() => setCameraReady(true)}
+        />
+        {isStreaming && (
+          <View style={styles.processingBadge}>
+            <Text style={styles.processingText}>Analizando en tiempo real...</Text>
+          </View>
+        )}
+      </View>
 
-        {loading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color="#2563eb" />
-            <Text style={styles.loadingText}>Procesando Muros y Personas...</Text>
+      <View style={styles.controlsRow}>
+        <Button title="Cambiar cámara" onPress={toggleFacing} />
+      </View>
+
+      <View style={styles.output}>
+        <Text style={styles.label}>Resultado del análisis:</Text>
+
+        {processedFrame ? (
+          <Image source={{ uri: processedFrame }} style={styles.outputImage} />
+        ) : (
+          <ActivityIndicator size="large" color="#007AFF" />
+        )}
+
+        {/* 🔹 Mostrar distancias detectadas */}
+        {distancias.length > 0 && (
+          <View style={{ marginTop: 10 }}>
+            <Text style={styles.distLabel}>Distancias detectadas:</Text>
+            {distancias.map((d, i) => (
+              <Text key={i} style={styles.distText}>
+                Persona {i + 1}: {d} m
+              </Text>
+            ))}
           </View>
         )}
 
-        {error && (
-            <Text style={styles.errorText}>Error: {error}</Text>
-        )}
-
-        {resultImageB64 && (
-          <View style={styles.resultContainer}>
-            <Text style={styles.sectionTitle}>Resultado de Detección</Text>
-            <Text style={styles.infoText}>Muros: Rojo | Personas: Verde</Text>
-            
-            {/* Imagen de Superposición */}
-            <Image 
-                source={{ uri: resultImageB64 }} 
-                style={styles.image} 
-                resizeMode="contain"
-            />
-            
-            {/* Lista de Personas */}
-            <Text style={[styles.resultsText, { color: '#059669' }]}>
-                Personas Detectadas: {personBoxes.length}
-            </Text>
-            <View style={styles.boxList}>
-                {personBoxes.map((box, index) => (
-                    <Text key={`p-${index}`} style={[styles.boxItem, { color: '#059669', fontWeight: 'bold' }]}>
-                        🧍 Persona {index + 1}: Confianza {box.confidence?.toFixed(2)}, ({box.x}, {box.y}) - W:{box.w}, H:{box.h}
-                    </Text>
-                ))}
-            </View>
-
-            {/* Lista de Muros */}
-            <Text style={[styles.resultsText, { color: '#dc2626', marginTop: 15 }]}>
-                Muros Detectados: {wallBoxes.length} región(es)
-            </Text>
-            <View style={styles.boxList}>
-                {wallBoxes.map((box, index) => (
-                    <Text key={`w-${index}`} style={styles.boxItem}>
-                        🧱 Muro {index + 1}: ({box.x}, {box.y}) - W:{box.w}, H:{box.h} (Área: {box.area})
-                    </Text>
-                ))}
-            </View>
+        {/* 🔹 Alerta visual */}
+        {alerta && (
+          <View style={styles.alertBox}>
+            <Text style={styles.alertText}>⚠ ¡Persona muy cerca!</Text>
           </View>
         )}
-        
-      </ScrollView>
-    </SafeAreaView>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: '#f8fafc', },
-  container: { padding: 20, alignItems: 'center', paddingBottom: 40, },
-  title: { fontSize: 24, fontWeight: 'bold', marginBottom: 8, color: '#1e293b', textAlign: 'center', },
-  subtitle: { fontSize: 14, color: '#64748b', marginBottom: 20, textAlign: 'center', },
-  ipText: { fontWeight: 'bold', color: '#dc2626', },
-  buttonContainer: { width: '100%', paddingHorizontal: 20, },
-  loadingContainer: { marginTop: 30, alignItems: 'center', padding: 20, backgroundColor: '#e0f2fe', borderRadius: 10, width: '90%', },
-  loadingText: { marginTop: 10, color: '#0ea5e9', fontWeight: '600', },
-  errorText: { marginTop: 20, color: '#dc2626', fontWeight: 'bold', textAlign: 'center', paddingHorizontal: 15, },
-  resultContainer: { marginTop: 30, width: '100%', alignItems: 'center', backgroundColor: '#ffffff', padding: 15, borderRadius: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 5, },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 5, color: '#1e293b', },
-  infoText: { fontSize: 14, color: '#64748b', marginBottom: 15, },
-  image: { width: '100%', height: 300, borderRadius: 8, backgroundColor: '#e2e8f0', marginBottom: 15, },
-  resultsText: { fontSize: 16, fontWeight: '600', marginBottom: 10, },
-  boxList: { width: '100%', paddingHorizontal: 10, },
-  boxItem: { fontSize: 12, color: '#475569', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: '#f1f5f9', }
+  container: { flex: 1, backgroundColor: "#F5F5F5", padding: 10 },
+  cameraContainer: {
+    width: "100%",
+    height: 350,
+    borderRadius: 15,
+    overflow: "hidden",
+    marginBottom: 10,
+    backgroundColor: "#000",
+  },
+  camera: { flex: 1 },
+  output: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 12,
+  },
+  label: {
+    fontWeight: "bold",
+    fontSize: 16,
+    marginBottom: 8,
+    color: "#111827",
+  },
+  outputImage: {
+    width: "90%",
+    height: 300,
+    borderRadius: 10,
+    backgroundColor: "#e5e7eb",
+  },
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
+  controlsRow: {
+    width: "100%",
+    flexDirection: "row",
+    justifyContent: "space-around",
+    paddingVertical: 8,
+  },
+  processingBadge: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  processingText: { color: "#fff", fontSize: 12, fontWeight: "600" },
+  alertBox: {
+    marginTop: 15,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    backgroundColor: "rgba(255,0,0,0.8)",
+    borderRadius: 8,
+  },
+  alertText: {
+    color: "#fff",
+    fontWeight: "bold",
+    fontSize: 18,
+  },
+  distLabel: {
+    fontWeight: "600",
+    fontSize: 14,
+    color: "#333",
+    marginBottom: 4,
+  },
+  distText: {
+    fontSize: 14,
+    color: "#444",
+  },
 });
-
-export default App;
