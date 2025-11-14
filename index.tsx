@@ -6,7 +6,6 @@ import {
   ActivityIndicator,
   StyleSheet,
   Button,
-  Alert,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
@@ -17,34 +16,33 @@ export default function App() {
   const [facing, setFacing] = useState("back");
   const [isStreaming, setIsStreaming] = useState(false);
   const [processedFrame, setProcessedFrame] = useState(null);
-  const [alerta, setAlerta] = useState(false);
-  const [distancias, setDistancias] = useState([]);
+  const [detecciones, setDetecciones] = useState([]);
+
   const cameraRef = useRef(null);
 
-  // ⚙️ Tu IP local (ajústala según tu red)
-  const SERVER_URL = "http://192.168.1.195:8000/stream_infer";
+  // ⚙️ Tu IP local (ajústala)
+  const SERVER_URL = "http://192.168.1.196:8000/stream_infer";
 
-  // 🔸 Pedir permisos al iniciar
+  // 🔸 Solicitar permisos
   useEffect(() => {
-    if (!permission) {
-      requestPermission();
-    }
+    if (!permission) requestPermission();
   }, []);
 
   const toggleFacing = () =>
     setFacing((prev) => (prev === "back" ? "front" : "back"));
 
-  // 📤 Enviar un frame al servidor
+  // 📤 Enviar frame al servidor Python (YOLO)
   const sendFrame = async () => {
     if (!cameraRef.current || !cameraReady) return;
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
-        quality: 0.1,
+        quality: 0.15,
         skipProcessing: true,
       });
 
+      // Reducir tamaño para enviar más rápido
       const resized = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 240 } }],
@@ -58,34 +56,29 @@ export default function App() {
       });
 
       const data = await response.json();
-      if (data.ok && data.overlay_jpg_b64) {
+
+      if (data.ok) {
         setProcessedFrame(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
-        setAlerta(data.alerta);
-        setDistancias(data.boxes.map((b) => b.distance_m));
+        setDetecciones(data.boxes);
       }
     } catch (err) {
-      console.error("Error al enviar frame:", err.message);
+      console.log("❌ Error enviando frame:", err.message);
     }
   };
 
-  // 🔁 Streaming automático
+  // 🔁 Iniciar stream
   useEffect(() => {
     let interval = null;
+
     if (cameraReady) {
       setIsStreaming(true);
-      interval = setInterval(() => sendFrame(), 600); // intervalo de envío rápido
+      interval = setInterval(() => sendFrame(), 650); // un frame cada 0.65 s
     }
+
     return () => clearInterval(interval);
   }, [cameraReady]);
 
-  // ⚠️ Mostrar alerta visual cuando alguien esté cerca
-  useEffect(() => {
-    if (alerta) {
-      console.log("⚠ Persona muy cerca!");
-    }
-  }, [alerta]);
-
-  // Manejo de permisos
+  // Pantallas de permisos
   if (!permission) {
     return (
       <View style={styles.center}>
@@ -103,7 +96,7 @@ export default function App() {
     );
   }
 
-  // 🖥️ Interfaz principal
+  // 🖥️ UI
   return (
     <View style={styles.container}>
       <View style={styles.cameraContainer}>
@@ -115,7 +108,7 @@ export default function App() {
         />
         {isStreaming && (
           <View style={styles.processingBadge}>
-            <Text style={styles.processingText}>Analizando en tiempo real...</Text>
+            <Text style={styles.processingText}>Analizando...</Text>
           </View>
         )}
       </View>
@@ -125,7 +118,7 @@ export default function App() {
       </View>
 
       <View style={styles.output}>
-        <Text style={styles.label}>Resultado del análisis:</Text>
+        <Text style={styles.label}>Resultado YOLO11X-SEG:</Text>
 
         {processedFrame ? (
           <Image source={{ uri: processedFrame }} style={styles.outputImage} />
@@ -133,23 +126,21 @@ export default function App() {
           <ActivityIndicator size="large" color="#007AFF" />
         )}
 
-        {/* 🔹 Mostrar distancias detectadas */}
-        {distancias.length > 0 && (
-          <View style={{ marginTop: 10 }}>
-            <Text style={styles.distLabel}>Distancias detectadas:</Text>
-            {distancias.map((d, i) => (
+        {detecciones.length > 0 && (
+          <View style={{ marginTop: 12 }}>
+            <Text style={styles.distLabel}>Objetos detectados:</Text>
+            {detecciones.map((d, i) => (
               <Text key={i} style={styles.distText}>
-                Persona {i + 1}: {d} m
+                • {d.label} — conf {d.conf.toFixed(2)}
               </Text>
             ))}
           </View>
         )}
 
-        {/* 🔹 Alerta visual */}
-        {alerta && (
-          <View style={styles.alertBox}>
-            <Text style={styles.alertText}>⚠ ¡Persona muy cerca!</Text>
-          </View>
+        {detecciones.length === 0 && processedFrame && (
+          <Text style={{ marginTop: 10, color: "#777" }}>
+            No se detectaron objetos.
+          </Text>
         )}
       </View>
     </View>
@@ -202,18 +193,6 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   processingText: { color: "#fff", fontSize: 12, fontWeight: "600" },
-  alertBox: {
-    marginTop: 15,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    backgroundColor: "rgba(255,0,0,0.8)",
-    borderRadius: 8,
-  },
-  alertText: {
-    color: "#fff",
-    fontWeight: "bold",
-    fontSize: 18,
-  },
   distLabel: {
     fontWeight: "600",
     fontSize: 14,
