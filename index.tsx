@@ -6,9 +6,11 @@ import {
   ActivityIndicator,
   StyleSheet,
   Button,
+  Vibration,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
+import { Audio } from "expo-av";   // <--- SONIDO AÑADIDO
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -20,10 +22,47 @@ export default function App() {
 
   const cameraRef = useRef(null);
 
-  // ⚙️ Tu IP local (ajústala)
-  const SERVER_URL = "http://192.168.1.196:8000/stream_infer";
+  // --------------------------
+  // 🔊 SONIDO
+  // --------------------------
+  const soundRef = useRef(null);
+  const isSoundPlaying = useRef(false);
 
-  // 🔸 Solicitar permisos
+  const loadSound = async () => {
+    const { sound } = await Audio.Sound.createAsync(
+      require("../../assets/alert.mp3")
+    );
+    soundRef.current = sound;
+  };
+
+  const playSound = async () => {
+    if (!soundRef.current || isSoundPlaying.current) return;
+
+    isSoundPlaying.current = true;
+    await soundRef.current.replayAsync();
+    setTimeout(() => (isSoundPlaying.current = false), 600);
+  };
+
+  // ----------------------------------
+  // 🔔 Vibración
+  // ----------------------------------
+  const vibrar = () => {
+    Vibration.vibrate(400); // 400 ms
+  };
+
+  // --------------------------
+  // Cargar sonido al inicio
+  // --------------------------
+  useEffect(() => {
+    loadSound();
+  }, []);
+
+  // IP DEL SERVIDOR PYTHON
+  const SERVER_URL = "http://192.168.1.198:8000/stream_infer";
+
+  // ----------------------------------
+  // PERMISOS
+  // ----------------------------------
   useEffect(() => {
     if (!permission) requestPermission();
   }, []);
@@ -31,18 +70,19 @@ export default function App() {
   const toggleFacing = () =>
     setFacing((prev) => (prev === "back" ? "front" : "back"));
 
-  // 📤 Enviar frame al servidor Python (YOLO)
+  // ----------------------------------
+  // 📤 ENVIAR FRAME
+  // ----------------------------------
   const sendFrame = async () => {
     if (!cameraRef.current || !cameraReady) return;
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
-        quality: 0.15,
+        quality: 0.10,
         skipProcessing: true,
       });
 
-      // Reducir tamaño para enviar más rápido
       const resized = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 240 } }],
@@ -60,25 +100,36 @@ export default function App() {
       if (data.ok) {
         setProcessedFrame(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
         setDetecciones(data.boxes);
+
+        // 🔔 VIBRAR + SONAR SI OBJETO CERCA
+        if (data.near && data.near.length > 0) {
+          console.log("⚠️ OBJETO CERCANO:", data.near);
+          vibrar();
+          playSound();
+        }
       }
     } catch (err) {
       console.log("❌ Error enviando frame:", err.message);
     }
   };
 
-  // 🔁 Iniciar stream
+  // ----------------------------------
+  // 🔁 STREAM DE FRAMES
+  // ----------------------------------
   useEffect(() => {
     let interval = null;
 
     if (cameraReady) {
       setIsStreaming(true);
-      interval = setInterval(() => sendFrame(), 650); // un frame cada 0.65 s
+      interval = setInterval(() => sendFrame(), 650);
     }
 
     return () => clearInterval(interval);
   }, [cameraReady]);
 
-  // Pantallas de permisos
+  // ----------------------------------
+  // UI — PERMISOS
+  // ----------------------------------
   if (!permission) {
     return (
       <View style={styles.center}>
@@ -96,7 +147,9 @@ export default function App() {
     );
   }
 
-  // 🖥️ UI
+  // ----------------------------------
+  // UI GENERAL
+  // ----------------------------------
   return (
     <View style={styles.container}>
       <View style={styles.cameraContainer}>
@@ -147,6 +200,9 @@ export default function App() {
   );
 }
 
+// --------------------------------------
+// ESTILOS
+// --------------------------------------
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F5F5F5", padding: 10 },
   cameraContainer: {
