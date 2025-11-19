@@ -61,16 +61,17 @@ else:
 
     print("✅ Modelo cargado correctamente")
 
+
 # -----------------------------
 # COLORES SÓLIDOS POR CLASE
 # -----------------------------
 CLASS_COLORS = {
-    0: (255, 0, 0),       # rojo
-    1: (0, 255, 0),       # verde
-    2: (0, 0, 255),       # azul
-    3: (255, 255, 0),     # cyan
-    4: (255, 0, 255),     # magenta
-    5: (0, 255, 255),     # amarillo
+    0: (255, 0, 0),
+    1: (0, 255, 0),
+    2: (0, 0, 255),
+    3: (255, 255, 0),
+    4: (255, 0, 255),
+    5: (0, 255, 255),
 }
 
 def get_class_color(cls_id):
@@ -79,11 +80,13 @@ def get_class_color(cls_id):
         CLASS_COLORS[cls_id] = tuple(int(v) for v in np.random.randint(50, 255, size=3))
     return CLASS_COLORS[cls_id]
 
+
 # -----------------------------
 # MODELO DE ENTRADA
 # -----------------------------
 class FrameInput(BaseModel):
     frame_b64: str
+
 
 # -----------------------------
 # FUNCIONES AUXILIARES
@@ -92,9 +95,11 @@ def pil_to_cv2_bgr(img):
     arr = np.asarray(img.convert("RGB"))
     return arr[:, :, ::-1].copy()
 
+
 def encode_jpg_b64(cv2_img, quality=40):
     _, buf = cv2.imencode(".jpg", cv2_img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return base64.b64encode(buf).decode()
+
 
 # -----------------------------
 # ENDPOINT PRINCIPAL
@@ -114,6 +119,9 @@ async def stream_infer(data: FrameInput):
         dets = []
         img_bgr = pil_to_cv2_bgr(pil_image)
 
+        near_objects = []
+        NEAR_THRESHOLD = 180  # px — ajusta según tus pruebas
+
         # -----------------------------
         # PROCESAR DETECCIONES
         # -----------------------------
@@ -122,24 +130,28 @@ async def stream_infer(data: FrameInput):
             conf = float(box.conf.item())
             x1, y1, x2, y2 = map(int, box.xyxy.cpu().numpy()[0])
 
+            w = x2 - x1
+            h = y2 - y1
             label = yolo_model.names[cls]
+
             dets.append({
                 "cls": cls,
                 "label": label,
                 "conf": conf,
                 "x": x1,
                 "y": y1,
-                "w": x2 - x1,
-                "h": y2 - y1
+                "w": w,
+                "h": h
             })
 
-            # ⭐ Color sólido por clase
+            # ⭐ Identificar objetos cercanos
+            if w > NEAR_THRESHOLD or h > NEAR_THRESHOLD:
+                near_objects.append(label)
+
+            # ⭐ Dibujar caja
             color = get_class_color(cls)
 
-            # BOX
             cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, 2)
-
-            # TEXTO
             cv2.putText(
                 img_bgr,
                 f"{label} {conf:.2f}",
@@ -151,7 +163,7 @@ async def stream_infer(data: FrameInput):
             )
 
         # -----------------------------
-        # SEGMENTACIÓN (si existe)
+        # SEGMENTACIÓN
         # -----------------------------
         if hasattr(results, "masks") and results.masks is not None:
             masks = results.masks.data.cpu().numpy()
@@ -159,22 +171,24 @@ async def stream_infer(data: FrameInput):
                 mask = (m * 255).astype(np.uint8)
                 mask = cv2.resize(mask, (img_bgr.shape[1], img_bgr.shape[0]))
                 colored = np.zeros_like(img_bgr)
-                colored[:, :, 1] = mask  # verde sólido
+                colored[:, :, 1] = mask
                 img_bgr = cv2.addWeighted(img_bgr, 1, colored, 0.4, 0)
 
         # -----------------------------
-        # CODIFICAR IMAGEN SALIDA
+        # CODIFICAR SALIDA
         # -----------------------------
         b64_overlay = encode_jpg_b64(img_bgr)
 
         return JSONResponse({
             "ok": True,
             "boxes": dets,
+            "near": near_objects,   # ⬅️ lista de objetos cercanos
             "overlay_jpg_b64": b64_overlay
         })
 
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
 
 # -----------------------------
 # SERVIDOR
