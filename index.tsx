@@ -1,3 +1,4 @@
+// --- (IMPORTS IGUALES) ---
 import React, { useEffect, useRef, useState } from "react";
 import {
   View,
@@ -5,88 +6,87 @@ import {
   Image,
   ActivityIndicator,
   StyleSheet,
-  Button,
+  TouchableOpacity,
   Vibration,
+  Dimensions,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
 import * as ImageManipulator from "expo-image-manipulator";
-import { Audio } from "expo-av";   // <--- SONIDO AÑADIDO
+import * as Speech from "expo-speech";
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
   const [cameraReady, setCameraReady] = useState(false);
   const [facing, setFacing] = useState("back");
-  const [isStreaming, setIsStreaming] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(true);
   const [processedFrame, setProcessedFrame] = useState(null);
   const [detecciones, setDetecciones] = useState([]);
 
   const cameraRef = useRef(null);
 
   // --------------------------
-  // 🔊 SONIDO
-  // --------------------------
-  const soundRef = useRef(null);
-  const isSoundPlaying = useRef(false);
-
-  const loadSound = async () => {
-    const { sound } = await Audio.Sound.createAsync(
-      require("../../assets/alert.mp3")
-    );
-    soundRef.current = sound;
-  };
-
-  const playSound = async () => {
-    if (!soundRef.current || isSoundPlaying.current) return;
-
-    isSoundPlaying.current = true;
-    await soundRef.current.replayAsync();
-    setTimeout(() => (isSoundPlaying.current = false), 600);
-  };
-
-  // ----------------------------------
   // 🔔 Vibración
-  // ----------------------------------
+  // --------------------------
   const vibrar = () => {
-    Vibration.vibrate(400); // 400 ms
+    Vibration.vibrate(400);
   };
 
   // --------------------------
-  // Cargar sonido al inicio
+  // 🔊 Control de voz
+  // --------------------------
+  const lastSpokenRef = useRef(0);
+  const lastSentenceRef = useRef(null);
+
+  const speakDirection = (sentence) => {
+    const now = Date.now();
+
+    if (sentence === lastSentenceRef.current && now - lastSpokenRef.current < 2500) return;
+
+    lastSentenceRef.current = sentence;
+    lastSpokenRef.current = now;
+
+    Speech.stop();
+    Speech.speak(sentence, {
+      language: "es-MX",
+      rate: 0.85,
+      pitch: 1.0,
+    });
+  };
+
+  // --------------------------
+  // IP DEL SERVIDOR PYTHON
+  // --------------------------
+  const SERVER_URL = "http://192.168.1.201:8000/stream_infer";
+
+  // --------------------------
+  // PERMISOS
   // --------------------------
   useEffect(() => {
-    loadSound();
-  }, []);
-
-  // IP DEL SERVIDOR PYTHON
-  const SERVER_URL = "http://192.168.1.198:8000/stream_infer";
-
-  // ----------------------------------
-  // PERMISOS
-  // ----------------------------------
-  useEffect(() => {
-    if (!permission) requestPermission();
-  }, []);
+    if (!permission) return;
+    if (!permission.granted) requestPermission();
+  }, [permission]);
 
   const toggleFacing = () =>
     setFacing((prev) => (prev === "back" ? "front" : "back"));
 
-  // ----------------------------------
+  // --------------------------
   // 📤 ENVIAR FRAME
-  // ----------------------------------
+  // --------------------------
   const sendFrame = async () => {
-    if (!cameraRef.current || !cameraReady) return;
+    if (!cameraRef.current || !cameraReady || !isStreaming) return;
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64: true,
-        quality: 0.10,
+        quality: 0.15,
         skipProcessing: true,
       });
 
       const resized = await ImageManipulator.manipulateAsync(
         photo.uri,
-        [{ resize: { width: 240 } }],
-        { compress: 0.3, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        [{ resize: { width: 350 } }],
+        { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
 
       const response = await fetch(SERVER_URL, {
@@ -99,13 +99,19 @@ export default function App() {
 
       if (data.ok) {
         setProcessedFrame(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
-        setDetecciones(data.boxes);
 
-        // 🔔 VIBRAR + SONAR SI OBJETO CERCA
-        if (data.near && data.near.length > 0) {
-          console.log("⚠️ OBJETO CERCANO:", data.near);
+        let objetos = data.objects || [];
+
+        objetos = objetos.filter((o) => o.distance_m <= 10);
+        objetos.sort((a, b) => a.distance_m - b.distance_m);
+        objetos = objetos.slice(0, 2);
+
+        setDetecciones(objetos);
+
+        if (objetos.length > 0) {
           vibrar();
-          playSound();
+          const descripcion = objetos.map((o) => `${o.label} ${o.direction}`).join(" y ");
+          speakDirection(descripcion);
         }
       }
     } catch (err) {
@@ -113,88 +119,76 @@ export default function App() {
     }
   };
 
-  // ----------------------------------
-  // 🔁 STREAM DE FRAMES
-  // ----------------------------------
+  // --------------------------
+  // 🔁 STREAM LOOP
+  // --------------------------
   useEffect(() => {
     let interval = null;
 
-    if (cameraReady) {
-      setIsStreaming(true);
-      interval = setInterval(() => sendFrame(), 650);
+    if (cameraReady && isStreaming) {
+      interval = setInterval(() => sendFrame(), 700);
     }
 
     return () => clearInterval(interval);
-  }, [cameraReady]);
+  }, [cameraReady, isStreaming]);
 
-  // ----------------------------------
+  // --------------------------
   // UI — PERMISOS
-  // ----------------------------------
-  if (!permission) {
+  // --------------------------
+  if (!permission?.granted) {
     return (
       <View style={styles.center}>
-        <Text>Verificando permisos...</Text>
+        <Text>Se requiere permiso de cámara</Text>
+        <TouchableOpacity onPress={requestPermission}>
+          <Text>Permitir</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
-  if (!permission.granted) {
-    return (
-      <View style={styles.center}>
-        <Text>Se requiere permiso para usar la cámara.</Text>
-        <Button title="Permitir cámara" onPress={requestPermission} />
-      </View>
-    );
-  }
-
-  // ----------------------------------
+  // --------------------------
   // UI GENERAL
-  // ----------------------------------
+  // --------------------------
   return (
     <View style={styles.container}>
-      <View style={styles.cameraContainer}>
-        <CameraView
-          ref={cameraRef}
-          facing={facing}
-          style={styles.camera}
-          onCameraReady={() => setCameraReady(true)}
-        />
-        {isStreaming && (
-          <View style={styles.processingBadge}>
-            <Text style={styles.processingText}>Analizando...</Text>
-          </View>
-        )}
-      </View>
+      <CameraView
+        ref={cameraRef}
+        facing={facing}
+        style={styles.camera}
+        onCameraReady={() => setCameraReady(true)}
+      />
 
-      <View style={styles.controlsRow}>
-        <Button title="Cambiar cámara" onPress={toggleFacing} />
-      </View>
+      {/* 🟥 Imagen con cajas del servidor superpuesta */}
+      {processedFrame && (
+        <Image source={{ uri: processedFrame }} style={styles.overlayFrame} />
+      )}
 
-      <View style={styles.output}>
-        <Text style={styles.label}>Resultado YOLO11X-SEG:</Text>
+      {/* 🟦 BADGE ANALIZANDO (solo si está activo) */}
+      {isStreaming && (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>Analizando...</Text>
+        </View>
+      )}
 
-        {processedFrame ? (
-          <Image source={{ uri: processedFrame }} style={styles.outputImage} />
-        ) : (
-          <ActivityIndicator size="large" color="#007AFF" />
-        )}
+      {/* 🟢 BOTONES INFERIORES */}
+      <View style={styles.bottomControls}>
+        {/* Cambiar cámara */}
+        <TouchableOpacity style={styles.btnCircle} onPress={toggleFacing}>
+          <MaterialIcons name="flip-camera-android" size={30} color="#fff" />
+        </TouchableOpacity>
 
-        {detecciones.length > 0 && (
-          <View style={{ marginTop: 12 }}>
-            <Text style={styles.distLabel}>Objetos detectados:</Text>
-            {detecciones.map((d, i) => (
-              <Text key={i} style={styles.distText}>
-                • {d.label} — conf {d.conf.toFixed(2)}
-              </Text>
-            ))}
-          </View>
-        )}
+        {/* Botón principal — PAUSAR / REANUDAR */}
+        <TouchableOpacity
+          style={[styles.btnMain, { backgroundColor: isStreaming ? "#007AFF" : "#555" }]}
+          onPress={() => setIsStreaming((prev) => !prev)}
+        >
+          <Ionicons name={isStreaming ? "pause" : "play"} size={40} color="#fff" />
+        </TouchableOpacity>
 
-        {detecciones.length === 0 && processedFrame && (
-          <Text style={{ marginTop: 10, color: "#777" }}>
-            No se detectaron objetos.
-          </Text>
-        )}
+        {/* Configuración */}
+        <TouchableOpacity style={styles.btnCircle}>
+          <Ionicons name="settings" size={28} color="#fff" />
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -203,60 +197,66 @@ export default function App() {
 // --------------------------------------
 // ESTILOS
 // --------------------------------------
+const { width, height } = Dimensions.get("window");
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F5F5", padding: 10 },
-  cameraContainer: {
+  container: { flex: 1, backgroundColor: "#000" },
+
+  camera: {
     width: "100%",
-    height: 350,
-    borderRadius: 15,
-    overflow: "hidden",
-    marginBottom: 10,
-    backgroundColor: "#000",
+    height: "100%",
+    position: "absolute",
+    top: 0,
+    left: 0,
   },
-  camera: { flex: 1 },
-  output: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    marginTop: 12,
+
+  overlayFrame: {
+    position: "absolute",
+    width: "100%",
+    height: "100%",
+    opacity: 0.85,
   },
-  label: {
-    fontWeight: "bold",
-    fontSize: 16,
-    marginBottom: 8,
-    color: "#111827",
-  },
-  outputImage: {
-    width: "90%",
-    height: 300,
+
+  badge: {
+    position: "absolute",
+    top: 40,
+    alignSelf: "center",
+    backgroundColor: "rgba(0,0,0,0.6)",
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderRadius: 10,
-    backgroundColor: "#e5e7eb",
   },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  controlsRow: {
+  badgeText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "600",
+  },
+
+  bottomControls: {
+    position: "absolute",
+    bottom: 25,
     width: "100%",
     flexDirection: "row",
-    justifyContent: "space-around",
-    paddingVertical: 8,
+    justifyContent: "space-evenly",
+    alignItems: "center",
   },
-  processingBadge: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    backgroundColor: "rgba(0,0,0,0.6)",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 6,
+
+  btnCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 60,
+    backgroundColor: "rgba(0,0,0,0.65)",
+    justifyContent: "center",
+    alignItems: "center",
   },
-  processingText: { color: "#fff", fontSize: 12, fontWeight: "600" },
-  distLabel: {
-    fontWeight: "600",
-    fontSize: 14,
-    color: "#333",
-    marginBottom: 4,
+
+  btnMain: {
+    width: 80,
+    height: 80,
+    borderRadius: 80,
+    justifyContent: "center",
+    alignItems: "center",
   },
-  distText: {
-    fontSize: 14,
-    color: "#444",
-  },
+
+  center: { flex: 1, justifyContent: "center", alignItems: "center" },
 });
