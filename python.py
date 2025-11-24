@@ -46,7 +46,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("🧠 Usando:", device)
 
 # AJUSTA ESTA RUTA si tu modelo está en otro lugar
-MODEL_PATH = r"C:\Users\aruel\Documents\Proyectos\React\yolo11x-seg.pt"
+MODEL_PATH = r"C:\Users\aruel\Documents\Proyectos\React\best.pt"
 
 if not os.path.exists(MODEL_PATH):
     print("❌ ERROR: No existe el modelo:", MODEL_PATH)
