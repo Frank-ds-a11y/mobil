@@ -57,7 +57,7 @@ export default function App() {
   // --------------------------
   // IP DEL SERVIDOR PYTHON
   // --------------------------
-  const SERVER_URL = "http://192.168.1.201:8000/stream_infer";
+  const SERVER_URL = "http://192.168.100.3:8000/stream_infer";
 
   // --------------------------
   // PERMISOS
