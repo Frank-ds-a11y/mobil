@@ -1,0 +1,244 @@
+
+// --- (IMPORTS IGUALES) ---
+import React, { useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Image,
+  ActivityIndicator,
+  StyleSheet,
+  TouchableOpacity,
+  Vibration,
+  Dimensions,
+} from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import { Ionicons, MaterialIcons } from "@expo/vector-icons";
+import * as ImageManipulator from "expo-image-manipulator";
+import * as Speech from "expo-speech";
+
+export default function App() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [cameraReady, setCameraReady] = useState(false);
+  const [facing, setFacing] = useState("back");
+  const [isStreaming, setIsStreaming] = useState(true);
+  const [processedFrame, setProcessedFrame] = useState(null);
+  const [detecciones, setDetecciones] = useState([]);
+
+  const cameraRef = useRef(null);
+
+  // --------------------------
+  // 🔔 Vibración
+  // --------------------------
+  const vibrar = () => {
+    Vibration.vibrate(400);
+  };
+
+  // --------------------------
+  // 🔊 Control de voz
+  // --------------------------
+  const lastSpokenRef = useRef(0);
+  const lastSentenceRef = useRef(null);
+
+  const speakDirection = (sentence) => {
+    const now = Date.now();
+
+    if (sentence === lastSentenceRef.current && now - lastSpokenRef.current < 2500) return;
+
+    lastSentenceRef.current = sentence;
+    lastSpokenRef.current = now;
+
+    Speech.stop();
+    Speech.speak(sentence, {
+      language: "es-MX",
+      rate: 0.85,
+      pitch: 1.0,
+    });
+  };
+
+  // --------------------------
+  // IP DEL SERVIDOR PYTHON
+  // --------------------------
+  const SERVER_URL = "http://192.168.1.210:8000/stream_infer";
+
+  // --------------------------
+  // PERMISOS
+  // --------------------------
+  useEffect(() => {
+    if (!permission) return;
+    if (!permission.granted) requestPermission();
+  }, [permission]);
+
+  const toggleFacing = () =>
+    setFacing((prev) => (prev === "back" ? "front" : "back"));
+
+  // --------------------------
+  // 📤 ENVIAR FRAME
+  // --------------------------
+  const sendFrame = async () => {
+    if (!cameraRef.current || !cameraReady || !isStreaming) return;
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        base64: true,
+        quality: 0.15,
+        skipProcessing: true,
+      });
+
+      const resized = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 350 } }],
+        { compress: 0.4, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      const response = await fetch(SERVER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ frame_b64: resized.base64 }),
+      });
+
+      const data = await response.json();
+
+      if (data.ok) {
+        setProcessedFrame(`data:image/jpeg;base64,${data.overlay_jpg_b64}`);
+
+        let objetos = data.objects || [];
+
+        objetos = objetos.filter((o) => o.distance_m <= 10);
+        objetos.sort((a, b) => a.distance_m - b.distance_m);
+        objetos = objetos.slice(0, 2);
+
+        setDetecciones(objetos);
+
+        if (objetos.length > 0) {
+          vibrar();
+          const descripcion = objetos.map((o) => `${o.label} ${o.direction}`).join(" y ");
+          speakDirection(descripcion);
+        }
+      }
+    } catch (err) {
+      console.log("❌ Error enviando frame:", err.message);
+    }
+  };
+
+  // --------------------------
+  // 🔁 STREAM LOOP
+  // --------------------------
+  useEffect(() => {
+    let interval = null;
+
+    if (cameraReady && isStreaming) {
+      interval = setInterval(() => sendFrame(), 700);
+    }
+
+    return () => clearInterval(interval);
+  }, [cameraReady, isStreaming]);
+
+  // --------------------------
+  // UI — PERMISOS
+  // --------------------------
+  if (!permission?.granted) {
+    return (
+      <View style={styles.center}>
+        <Text>Se requiere permiso de cámara</Text>
+        <TouchableOpacity onPress={requestPermission}>
+          <Text>Permitir</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // ---------------------------------------------------
+  // 🚀 INTERFAZ OSCURA + SOLO BOTÓN AZUL DE CAMBIAR CAMARA
+  // ---------------------------------------------------
+  return (
+    <View style={styles.darkContainer}>
+      
+      <Text style={styles.scanTitle}>Analizando entorno...</Text>
+
+      <CameraView
+        ref={cameraRef}
+        facing={facing}
+        style={styles.fullCamera}
+        onCameraReady={() => setCameraReady(true)}
+      />
+
+      {/* SOLO EL BOTÓN AZUL */}
+      <View style={styles.bottomControls}>
+        <TouchableOpacity
+          style={styles.roundButtonMain}
+          onPress={toggleFacing}   // ⬅ CAMBIA LA CAMARA
+        >
+          <Text style={{ color: "#fff", fontSize: 34 }}>📷</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Text style={styles.pauseLabel}>Cambiar cámara</Text>
+    </View>
+  );
+}
+
+// ---------------------------------------------------
+// 🎨 ESTILOS (MISMA INTERFAZ PERO SIN BOTONES LATERALES)
+// ---------------------------------------------------
+const styles = StyleSheet.create({
+  darkContainer: {
+    flex: 1,
+    backgroundColor: "#0D0D0D",
+    alignItems: "center",
+    paddingTop: 50,
+  },
+
+  scanTitle: {
+    color: "#fff",
+    fontSize: 18,
+    marginBottom: 15,
+  },
+
+  fullCamera: {
+    width: "92%",
+    height: "60%",
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#000",
+  },
+
+  bottomControls: {
+    width: "100%",
+    marginTop: 40,
+    justifyContent: "center",
+    flexDirection: "row",
+  },
+
+  roundButtonMain: {
+    width: 80,
+    height: 80,
+    borderRadius: 50,
+    backgroundColor: "#2CCBFF",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  pauseLabel: {
+    color: "#fff",
+    marginTop: 18,
+    fontSize: 16,
+  },
+
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  permissionButton: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: "#2CCBFF",
+    borderRadius: 10,
+  },
+
+  permissionText: {
+    color: "#fff",
+    fontWeight: "bold",
+  },
+});
