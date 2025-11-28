@@ -109,6 +109,14 @@ CLASS_HEIGHTS_M = {
     "chair": 0.9,
     "mesa": 0.75,
     "table": 0.75,
+    "bache": 1.60,
+    "pothole": 1.60,
+    "bench": 1.60,
+    "banqueta": 1.60,
+    "car mirror": 0.9,
+    "retrovisor": 0.9,
+    "puerta auto":0.75,
+    "car door": 0.75,
     # si tu modelo tiene otras clases, agrégalas aquí
 }
 
